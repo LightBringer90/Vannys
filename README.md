@@ -1,91 +1,181 @@
-# Rama — local replica
+# Rama — self-contained replica of `rama.framer.media`
 
-A fully self-contained local copy of <https://rama.framer.media/> (a Framer-built
-"Rama – Creative Agency" template), served by nginx in Docker.
+A fully self-contained, offline copy of <https://rama.framer.media/> (the Framer
+"Rama – Creative Agency" template), served by **OpenResty (nginx + Lua)** in Docker.
 
-The site was mirrored statically (all HTML pages + every CSS/JS/font/image asset)
-and all asset URLs were rewritten to local, root-relative paths, so **nothing is
-fetched from the internet at runtime** (except outbound links you click, e.g. the
-social icons).
+Every page, asset, JS module, font and CMS data file is mirrored locally and all
+asset URLs are rewritten to local, root-relative paths, so **nothing is fetched
+from the internet at runtime** — except outbound links you intentionally click
+(social icons, etc.). The console is clean (0 errors/warnings) on every page,
+through full scroll and client-side navigation, matching the live site.
 
-## Run
+---
 
-```bash
-docker compose up -d --build
-```
-
-Then open <http://localhost:8080>.
-
-Stop / remove:
+## Quick start (local)
 
 ```bash
-docker compose down
+docker compose up -d --build      # build + run
+# open http://localhost:8080
+docker compose down               # stop + remove
 ```
 
-To serve on a different port, edit the `ports` mapping in `docker-compose.yml`
-(`"8080:80"` → `"<your-port>:80"`).
-
-## What's included
-
-- `site/` — the mirrored website
-  - `rama.framer.media/` — the HTML pages (home, about, works + items, blog +
-    posts, contact, legal). Served at the web root with clean URLs (`/`,
-    `/about`, `/works/...`, `/blog/...`).
-  - `framerusercontent.com/`, `fonts.gstatic.com/`, `unpkg.com/`,
-    `events.framer.com/` — mirrored third-party assets, served at `/<host>/...`.
-- `nginx.conf` — routing + content-type fixes.
-- `Dockerfile` — `nginx:alpine` with the site baked in.
-- `docker-compose.yml` — build + run on port 8080.
-
-## Notes / known limitations
-
-- This is a **static** mirror. Framer's runtime hydrates the page, animations and
-  client-side navigation work, and the CMS-backed blog/works collections load from
-  the mirrored `.framercms` data. Form submission still has no backend.
-- Console is clean (0 errors/warnings) on every page, matching the live site.
-
-### Things that had to be fixed to get a clean console
-
-- **Responsive images (`srcset`)** — wget's `--convert-links` corrupts `srcset`
-  attributes, so the mirror is taken *without* it and asset URLs are rewritten by
-  hand instead.
-- **Dynamically imported JS chunks** — wget can't see `import()` calls, so the
-  `.mjs` chunks they load were fetched in a second pass by scanning the downloaded
-  modules for `*.mjs` references until closure.
-- **CMS data** — Framer loads collection data (`*.framercms`) client-side from
-  `/framerusercontent.com/cms/...`; those files were mirrored too.
-- **CMS range queries (crashed on scroll)** — Framer's CMS loader doesn't fetch
-  whole `.framercms` files; it requests specific byte ranges via a custom
-  `?range=from-to,from-to` *query parameter* and expects only those bytes back,
-  concatenated. A plain static server returns the whole file, so the loader throws
-  "Unexpected response length" and the bound component crashes when it scrolls
-  into view. The server therefore runs **OpenResty** (nginx + Lua) with a small
-  handler that honours the `range` query (see `nginx.conf`).
-- **`new URL(rel, "/root-relative")`** — Framer's CMS loader builds URLs with a
-  root-relative base, which the spec rejects ("Invalid base URL") once the host is
-  localized. A tiny shim injected at the top of each page's `<head>`
-  (`<!--__local_url_shim__-->`) makes such bases resolve against the page origin.
-- **Image-CDN filenames** — saved with their `?width=…&height=…` query baked into
-  the filename; references encode the `?` as `%3F` and `nginx.conf` restores the
-  correct image MIME types.
-- **`.mjs` MIME** — the Dockerfile adds `mjs` to nginx's mime.types so ES modules
-  load as JavaScript.
-- **Analytics** — `events.framer.com/script` is served locally (a no-op offline);
-  no beacons leave the machine.
-
-## How it was mirrored (for reference / re-mirroring)
-
-GNU wget was run inside a throwaway container (Docker Desktop bind mounts on this
-machine fail to write many files, so the crawl ran in the container's own
-filesystem and the result was copied out via `docker cp`):
+Change the local port with the `RAMA_PORT` env var (defaults to `8080`):
 
 ```bash
-wget --recursive --level=15 --page-requisites --adjust-extension --convert-links \
-     --span-hosts \
-     --domains=rama.framer.media,framerusercontent.com,fonts.gstatic.com,app.framerstatic.com,events.framer.com,unpkg.com \
-     --no-parent -e robots=off \
-     https://rama.framer.media/
+RAMA_PORT=9000 docker compose up -d --build   # http://localhost:9000
 ```
 
-Then absolute and relative asset URLs were normalized to root-relative `/host/...`
-paths across all `.html`/`.css`/`.mjs`/`.js` files.
+---
+
+## Live deployment
+
+| | |
+|---|---|
+| **Public URL** | http://89.37.212.232:8081/ |
+| **Server** | CentOS 7, Docker 26.1.4 + Compose v2 |
+| **Path on server** | `/opt/rama` |
+| **Container** | `rama-local` (port mapping `8081->80`, `restart: unless-stopped`) |
+| **Port** | `8081` (set via `/opt/rama/.env` → `RAMA_PORT=8081`) |
+| **GitHub** | `git@github.com:LightBringer90/Vannys.git` (branch `main`) |
+
+The server also runs unrelated projects which this deployment does **not** touch:
+`lapensiuneavlad.ro` (host nginx on :80/:443) and `kaya-summer-school` (container
+on :8080). Rama lives on its own port to stay isolated.
+
+### Redeploy / update the live site
+
+From your machine (after committing changes):
+
+```bash
+# option A: rsync the working tree
+sshpass -e rsync -az --delete \
+  -e "ssh -o StrictHostKeyChecking=no" \
+  --exclude '.git' --exclude '.claude' --exclude '*.tar.gz' \
+  /Users/silviu/Vannys/ root@89.37.212.232:/opt/rama/
+
+# then on the server
+ssh root@89.37.212.232 'cd /opt/rama && docker compose up -d --build'
+```
+
+Or pull from GitHub on the server instead of rsync:
+
+```bash
+ssh root@89.37.212.232
+cd /opt/rama && git pull && docker compose up -d --build   # if /opt/rama is a git clone
+```
+
+> The server currently holds a plain copy (not a git clone). To switch to
+> git-based deploys, `git clone git@github.com:LightBringer90/Vannys.git /opt/rama`
+> once (after backing up the existing `.env`).
+
+---
+
+## Site specification
+
+### Pages (under `site/rama.framer.media/`)
+
+| URL | File | Notes |
+|---|---|---|
+| `/` | `index.html` | Home |
+| `/about` | `about.html` | |
+| `/works` | `works.html` | Works listing (CMS collection) |
+| `/works/<slug>` | `works/<slug>.html` | 6 case-study pages |
+| `/blog` | `blog.html` | Blog listing (CMS collection) |
+| `/blog/<slug>` | `blog/<slug>.html` | 6 blog posts |
+| `/contact` | `contact.html` | Form has no backend (static) |
+| `/legal/privacy-policy` | `legal/privacy-policy.html` | |
+| `/legal/terms-of-service` | `legal/terms-of-service.html` | |
+
+Works slugs: `website-and-branding-for-bima-agency`, `-kresna-agency`,
+`-pandawa-agency`, `-sadewa-agency`, `-nakula-agency`, `-mandala`.
+Blog slugs: `how-big-brands-win-the-competition`,
+`the-real-reason-big-brands-stay-ahead`,
+`why-smart-brands-grow-faster-than-the-rest`,
+`how-efficient-teams-beat-larger-teams`,
+`the-growth-mindset-modern-brands-use`,
+`why-simple-systems-win-in-competitive-markets`.
+
+Pages are served at clean, extensionless URLs via nginx
+`try_files $uri $uri.html $uri/index.html`.
+
+### Mirrored asset hosts (served at `/<host>/...`)
+
+| Directory | What |
+|---|---|
+| `framerusercontent.com/` | Images, fonts, ES modules (`.mjs`), CSS, videos (`.mp4`), and CMS data (`cms/*.framercms`) |
+| `fonts.gstatic.com/` | Google web-font files |
+| `unpkg.com/` | `lenis` smooth-scroll library |
+| `events.framer.com/` | Analytics loader (`script`) — served locally, inert offline |
+
+Framer site ID: `5LeW06E5i3LR827u1NsnHA`
+(modules live under `framerusercontent.com/sites/5LeW06E5i3LR827u1NsnHA/`).
+
+### Tech stack of the original
+
+- **Framer** export (React + a `motion` runtime + `framer` runtime bundle).
+- ES modules (`.mjs`), many loaded via dynamic `import()`.
+- **CMS collections** (blog, works) loaded client-side from `*.framercms`
+  binary files using HTTP byte-range *query params*.
+- `lenis` for smooth scrolling.
+
+---
+
+## How it's served (`nginx.conf` / `Dockerfile`)
+
+The image is **OpenResty** (`openresty/openresty:alpine`) — nginx plus Lua. The
+site is baked into the image at build time (`COPY site/ ...`), so the container is
+fully portable with no runtime volume.
+
+Key pieces of `nginx.conf`:
+
+1. **`*.framercms` Lua handler** — honours Framer's custom
+   `?range=from-to,from-to` query param: it reads only the requested byte ranges,
+   concatenates them, and returns them. Marked `Cache-Control: no-store` (a cached
+   whole-file copy would fail the loader's length check). **Must precede** the
+   generic host-dir location.
+2. **Image MIME restore** — Framer image files were saved with their
+   `?width=…&height=…` query baked into the filename, so nginx can't infer the
+   type. Regex locations set `image/jpeg` / `image/png` etc.
+3. **Analytics** — `= /events.framer.com/script` served as JavaScript.
+4. **Host dirs** — `framerusercontent.com`, `fonts.gstatic.com`, `unpkg.com`,
+   `events.framer.com` served from the web root with long cache.
+5. **Pages** — everything else resolves under `rama.framer.media/` with clean URLs.
+
+`Dockerfile` also adds `mjs` to `mime.types` so ES modules are served as
+JavaScript.
+
+---
+
+## Known limitations
+
+- **Static mirror.** Layout, styles, fonts, images, videos, animations,
+  client-side navigation, and the CMS-driven blog/works lists all work. The
+  **contact form has no backend** (submits nowhere). Analytics is a local no-op.
+- **Snapshot in time.** Mirrored from the version published 2026-05-21. Re-run the
+  mirror (see `BUILD_NOTES.md`) to refresh content.
+- **`ERR_ABORTED` on `.mp4`** in devtools is normal browser behaviour (it aborts a
+  buffered `<video>` range request); the videos serve fine with `206` range support.
+
+---
+
+## Repository layout
+
+```
+.
+├── Dockerfile            # OpenResty image, mjs mime fix, bakes in site/
+├── docker-compose.yml    # build + run, port via ${RAMA_PORT:-8080}
+├── nginx.conf            # routing, framercms range handler, mime fixes
+├── .dockerignore         # keeps site.tar.gz etc. out of the build context
+├── .gitignore            # excludes .claude/, *.tar.gz
+├── README.md             # this file
+├── BUILD_NOTES.md        # full chronological build log + every fix
+└── site/                 # the mirrored website (≈330 files)
+    ├── rama.framer.media/         # HTML pages
+    ├── framerusercontent.com/     # assets + modules + cms/*.framercms
+    ├── fonts.gstatic.com/
+    ├── unpkg.com/
+    └── events.framer.com/
+```
+
+See **`BUILD_NOTES.md`** for exactly how the mirror was produced, every problem
+encountered, and how each was fixed — start there before changing the mirror.
