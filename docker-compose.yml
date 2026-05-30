@@ -1,0 +1,8 @@
+services:
+  rama:
+    build: .
+    image: rama-local
+    container_name: rama-local
+    ports:
+      - "${RAMA_PORT:-8080}:80"
+    restart: unless-stopped
